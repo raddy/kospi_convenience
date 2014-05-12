@@ -304,8 +304,8 @@ def db_rt_vols(mysql_con,t1,t2,expiry_info):
     td = t1.strftime("%Y%m%d")
 
     expiry = get_expiry(td,expiry_info)
-    dte = get_dte(expiry,td,expiry_info)
-    table_name = 'opm_'+td+'_'+get_expiry_code(td)+'_smoothedVols'
+    dte = get_dte(expiry,td)
+    table_name = 'opm_'+td+'_'+get_expiry_code(td,expiry_info)+'_smoothedVols'
 
 
     vols,basis = db_vols(table_name,mysql_con,pd.Timestamp(td),query_type='raw',
