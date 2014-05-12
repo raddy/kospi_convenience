@@ -9,7 +9,6 @@ import pandas.io.sql as psql
 import statsmodels.api as sm
 import MySQLdb
 
-expiry_info = pd.Series([])
 
 def load_expiries(expiry_path):
     df = pd.read_csv(expiry_path,header=None)
@@ -24,10 +23,10 @@ def get_dte(expiry,trade_date):
     s = (pd.Series(pd.to_datetime(drange).tolist(),index=drange).asfreq(pd.tseries.offsets.BDay()))
     return len(s)
 
-def get_expiry(trade_date):
+def get_expiry(trade_date,expiry_info):
     return expiry_info[(expiry_info.index>=pd.Timestamp(trade_date))].index[0]
 
-def get_expiry_code(trade_date):
+def get_expiry_code(trade_date,expiry_info):
     return expiry_info[(expiry_info.index>=pd.Timestamp(trade_date))].values[0]
 
 def front_underlying(some_md):
@@ -298,14 +297,14 @@ def db_ords(start_time,end_time):
 def to_sql_time(some_timestamp):
     return some_timestamp.strftime('%Y-%m-%d %H:%M:%S')
 
-def db_rt_vols(mysql_con,t1,t2):
+def db_rt_vols(mysql_con,t1,t2,expiry_info):
 
 
     sql_t1,sql_t2 = to_sql_time(t1),to_sql_time(t2)
     td = t1.strftime("%Y%m%d")
 
-    expiry = get_expiry(td)
-    dte = get_dte(expiry,td)
+    expiry = get_expiry(td,expiry_info)
+    dte = get_dte(expiry,td,expiry_info)
     table_name = 'opm_'+td+'_'+get_expiry_code(td)+'_smoothedVols'
 
 
