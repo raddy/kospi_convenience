@@ -144,52 +144,68 @@ def to_sql_date(a_pandas_timestamp):
 def to_expiry_stamp(a_pandas_timestamp):
     return pd.Timestamp(a_pandas_timestamp.strftime('%Y-%m-%d')+'T14:50:00')
 
-def fetch_front_h5_rt_vols(fn,two_digit_code,expiry):
-    
-    h5_pointer = pd.HDFStore(fn)
-    pcap_info = h5_pointer['pcap_data']
+def fn_to_td(fn):
+    return fn.replace('.h5','').split('/')[-1]
 
+def fetch_deio_vols_by_date(td,expiry,expiry_info):
     mysql_con = sql.connect(host='10.1.31.202',
                 port=3306,user='deio', passwd='!w3alth!',
                 db='DEIO_SY')
 
-    my_und = underlying_code(underlying_code_by_two_digit_code(two_digit_code),underlyings(pcap_info)).values[0]
-    just_that_data = pcap_info[options_expiry_mask(pcap_info.symbol,two_digit_code)]
-    
-    fixed_data = two_level_fix_a3s(just_that_data.symbol.values,just_that_data.msg_type.str[1:].astype(long).values,just_that_data.ix[:,['bid1','bidsize1','ask1','asksize1','bid2','bidsize2','ask2','asksize2','tradeprice','tradesize']].values)
-    just_that_fut = pcap_info[pcap_info.symbol==my_und]
-    strikes = np.array(kospi_strikes_from_symbols(just_that_data.symbol.values).astype(int),dtype=object)
+    start_time,end_time = td+'T090000',td+'T151500'
 
-    start_time,end_time = fn.replace('.h5','').split('/')[-1].split('_')
     sql_t1,sql_t2 = to_sql_time(start_time),to_sql_time(end_time)
     sql_date = to_sql_date(start_time)
     dte = get_dte(expiry,sql_date)
-    table_name = 'opm_'+sql_date+'_'+get_expiry_code(sql_t1)+'_smoothedVols'
-    vols,basis = db_vols(table_name,mysql_con,pd.Timestamp(sql_date),query_type='raw',
-        us_time=False,smooth=False,t1=sql_t1,t2=sql_t2,return_basis=True)
-    vols.index = vols.index.astype(np.int64)
-    basis.index = vols.index
     
-    c = cross(strikes,just_that_data.index.astype(long),vols.index.values,vols.columns.values.astype(object),vols.values)
+    table_name = 'opm_'+sql_date+'_'+get_expiry_code(sql_t1,expiry_info)+'_smoothedVols'
+    vols,basis = db_vols(table_name,mysql_con,pd.Timestamp(sql_date),query_type='smoothed',
+        us_time=False,smooth=False,t1=sql_t1,t2=sql_t2,return_basis=True)
+    vols.index = vols.index.tz_localize('Asia/Seoul').tz_convert('UTC').astype(np.int64)
+    basis.index = vols.index
+    return [vols,basis,dte]
 
+def fetch_front_h5_rt_vols(fn,two_digit_code,expiry,expiry_info,shifty=30):
+    
+    h5_pointer = pd.HDFStore(fn)
+    pcap_info = h5_pointer['pcap_data']
+    h5_pointer.close()
+
+    my_und = underlying_code(underlying_code_by_two_digit_code(two_digit_code),underlyings(pcap_info)).values[0]
+    just_that_data = pcap_info[options_expiry_mask(pcap_info.symbol,two_digit_code)]
+    just_that_fut = pcap_info[pcap_info.symbol==my_und]
+    strikes = np.array(kospi_strikes_from_symbols(just_that_data.symbol.values).astype(int),dtype=object)
+
+    
+    td = fn_to_td(fn)
+    vols,basis,dte = fetch_deio_vols_by_date(td,expiry,expiry_info)
+    forward_vols = vols.shift(-shifty).fillna(how='ffill')
+    forward_basis = vols.shift(-shifty).fillna(how='ffill')
+
+    c = cross(strikes,just_that_data.index.astype(long),vols.index.values,vols.columns.values.astype(object),vols.values)
+    c2 = cross(strikes,just_that_data.index.astype(long),forward_vols.index.values,forward_vols.columns.values.astype(object),forward_vols.values)
+    
     just_that_data['tte'] = dte/260.
     just_that_data['vols'] = c
-    
-
-    
-    expiries = just_that_data.symbol.str[6:8]    
+    just_that_data['fvols'] = c2  
     just_that_data['basis'] = basis.asof(just_that_data.index).fillna(method='ffill')
+    just_that_data['fbasis'] = forward_basis.asof(just_that_data.index).fillna(method='ffill')
     just_that_data['strike'] = strikes
     just_that_data['type'] = kospi_types_from_symbols(just_that_data.symbol.values)
-    dat = just_that_data.append(just_that_fut).sort_index()
+    
+    if underlying_code_by_two_digit_code(two_digit_code) != two_digit_code:
+        dat = just_that_data.append(just_that_fut).sort_index()
+    else:
+        dat = just_that_data.sort_index()
+    
+    dat.index = fix_timestamps(dat.index.values)
     dat.index = pd.to_datetime(dat.index)
     dat.basis = dat.basis.fillna(method='ffill')
         
-    #throw out 'expired' options data
+    #throw out 'expired' options data -- data after 14:50:00 on expiry
     if dte<=1:
-        new_end_time = to_expiry_stamp(pd.Timestamp(start_time))
+        new_end_time = to_expiry_stamp(pd.Timestamp(td))
         dat = dat.ix[:new_end_time]
-
     return dat
 
 def fetch_front_h5(fn,two_digit_code,expiry):
@@ -294,10 +310,23 @@ def db_ords(start_time,end_time):
     ords = psql.frame_query('select id,orderStatus,qty,price,side,eventTime,usEventTime,exchOrderId,triggerId from orders where eventTime>"'+t1+'" and eventTime<"'+t2+
                                 '"+',con=mysql_con)
 
-def to_sql_time(some_timestamp):
-    return some_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+#def to_sql_time(some_timestamp):
+#    return some_timestamp.strftime('%Y-%m-%d %H:%M:%S')
 
-def db_rt_vols(mysql_con,t1,t2,expiry_info):
+def deio_rt_unds(mysql_con,t1,t2,expiry_info):
+    sql_t1,sql_t2 = to_sql_time(t1),to_sql_time(t2)
+    td = t1.strftime("%Y%m%d")
+
+    expiry = get_expiry(td,expiry_info)
+    dte = get_dte(expiry,td)
+    table_name = 'opm_'+td+'_'+get_expiry_code(td,expiry_info)+'_rawVols'
+
+    hi = psql.frame_query('select * from '+table_name+' where eventTime>"'+sql_t1+'" and eventTime<"'+sql_t2+'"',mysql_con)
+    futs = pd.Series(hi.synthetic - hi.futureMidPrice)*100.0
+    futs.index= pd.to_datetime((hi['eventTime'].apply(str)+'.'+hi['usEventTime'].apply(str)))
+    return futs
+
+def db_rt_vols(mysql_con,t1,t2,expiry_info,query_type='raw'):
 
 
     sql_t1,sql_t2 = to_sql_time(t1),to_sql_time(t2)
@@ -308,14 +337,14 @@ def db_rt_vols(mysql_con,t1,t2,expiry_info):
     table_name = 'opm_'+td+'_'+get_expiry_code(td,expiry_info)+'_smoothedVols'
 
 
-    vols,basis = db_vols(table_name,mysql_con,pd.Timestamp(td),query_type='raw',
+    vols,basis = db_vols(table_name,mysql_con,pd.Timestamp(td),query_type,
         us_time=False,smooth=False,t1=sql_t1,t2=sql_t2,return_basis=True)
     vols.index = vols.index.astype(np.int64)
     basis.index = vols.index
     return [vols,basis]
 
 def db_vols(table_name,mysql_con,td,query_type='raw',us_time=False,
-    smooth=False,t1=None,t2=None,return_basis=False):
+    smooth=False,t1=None,t2=None,return_basis=False,return_futs=False):
     
     ignore_cols = ['eventTime','usEventTime','time']
 
@@ -394,6 +423,8 @@ def db_vols(table_name,mysql_con,td,query_type='raw',us_time=False,
             v = myvols[c]
             v = sm.tsa.filters.hpfilter(v,1e5)[1]
             myvols[c] = v
+    if return_futs:
+        return [myvols,underlying,basis]
     if return_basis:
         return [myvols,basis]
     else:
