@@ -147,6 +147,8 @@ def to_expiry_stamp(a_pandas_timestamp):
 def fn_to_td(fn):
     return fn.replace('.h5','').split('/')[-1]
 
+
+
 def fetch_deio_vols_by_date(td,expiry,expiry_info):
     mysql_con = sql.connect(host='10.1.31.202',
                 port=3306,user='deio', passwd='!w3alth!',
@@ -159,11 +161,12 @@ def fetch_deio_vols_by_date(td,expiry,expiry_info):
     dte = get_dte(expiry,sql_date)
     
     table_name = 'opm_'+sql_date+'_'+get_expiry_code(sql_t1,expiry_info)+'_smoothedVols'
-    vols,basis = db_vols(table_name,mysql_con,pd.Timestamp(sql_date),query_type='smoothed',
-        us_time=False,smooth=False,t1=sql_t1,t2=sql_t2,return_basis=True)
+    vols,und,basis = db_vols(table_name,mysql_con,pd.Timestamp(sql_date),query_type='smoothed',
+        us_time=False,smooth=False,t1=sql_t1,t2=sql_t2,return_futs=True,return_basis=True)
     vols.index = vols.index.tz_localize('Asia/Seoul').tz_convert('UTC').astype(np.int64)
+    und.index = vols.index
     basis.index = vols.index
-    return [vols,basis,dte]
+    return [vols,und,basis,dte]
 
 def fetch_front_h5_rt_vols(fn,two_digit_code,expiry,expiry_info,shifty=30):
     
@@ -179,8 +182,8 @@ def fetch_front_h5_rt_vols(fn,two_digit_code,expiry,expiry_info,shifty=30):
     
     td = fn_to_td(fn)
     vols,basis,dte = fetch_deio_vols_by_date(td,expiry,expiry_info)
-    forward_vols = vols.shift(-shifty).fillna(how='ffill')
-    forward_basis = vols.shift(-shifty).fillna(how='ffill')
+    forward_vols = vols.shift(-shifty).fillna(method='ffill')
+    forward_basis = basis.shift(-shifty).fillna(method='ffill')
 
     c = cross(strikes,just_that_data.index.astype(long),vols.index.values,vols.columns.values.astype(object),vols.values)
     c2 = cross(strikes,just_that_data.index.astype(long),forward_vols.index.values,forward_vols.columns.values.astype(object),forward_vols.values)
@@ -275,7 +278,10 @@ def deio_user_id(mysql_con,who):
     
 def db_orders(file_name,user=None,strat=None):
     
-    start_time,end_time = file_name.replace('.h5','').split('/')[-1].split('_')
+
+    td = fn_to_td(file_name)
+    start_time,end_time = td+'T090000',td+'T151500'
+    
     t1,t2 = to_sql_time(start_time),to_sql_time(end_time)
 
     mysql_con = sql.connect(host='10.1.31.202',
@@ -287,6 +293,10 @@ def db_orders(file_name,user=None,strat=None):
         typeid = str(deio_strat_id(mysql_con,strat))
         ords = psql.frame_query('select id,orderStatus,qty,price,side,eventTime,usEventTime,exchOrderId,triggerId from orders where eventTime>"'+t1+'" and eventTime<"'+t2+
                                 '" and userId="'+userid+'" and type='+typeid +' and price<20',con=mysql_con)
+        if ords.empty:
+            print "Found no orders..."
+            return pd.DataFrame()
+
         ords['time'] = pd.to_datetime((ords['eventTime'].apply(str)+'.'+ords['usEventTime'].apply(str)))
         ords['triggerId'] = ords.triggerId % 1e6
         ords.index = ords.time
