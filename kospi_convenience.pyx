@@ -159,7 +159,7 @@ def fetch_deio_vols_by_date(td,expiry,expiry_info):
     sql_t1,sql_t2 = to_sql_time(start_time),to_sql_time(end_time)
     sql_date = to_sql_date(start_time)
     dte = get_dte(expiry,sql_date)
-    
+    print "DTE: ",dte
     table_name = 'opm_'+sql_date+'_'+get_expiry_code(sql_t1,expiry_info)+'_smoothedVols'
     vols,und,basis = db_vols(table_name,mysql_con,pd.Timestamp(sql_date),query_type='smoothed',
         us_time=False,smooth=False,t1=sql_t1,t2=sql_t2,return_futs=True,return_basis=True)
