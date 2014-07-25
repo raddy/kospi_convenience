@@ -181,7 +181,7 @@ def fetch_front_h5_rt_vols(fn,two_digit_code,expiry,expiry_info,shifty=30):
 
     
     td = fn_to_td(fn)
-    vols,basis,dte = fetch_deio_vols_by_date(td,expiry,expiry_info)
+    vols,und,basis,dte = fetch_deio_vols_by_date(td,expiry,expiry_info)
     forward_vols = vols.shift(-shifty).fillna(method='ffill')
     forward_basis = basis.shift(-shifty).fillna(method='ffill')
 
